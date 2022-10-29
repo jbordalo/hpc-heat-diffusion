@@ -9,10 +9,13 @@ else
 
 endif
 
-all:    main
+all:    main cuda
 
 main:	src/main.c $(OBJ)
 	cc -o main $(CFLAGS) $< $(OBJ) $(LDFLAGS)
+
+cuda: src/main.cu $(OBJ)
+	nvcc -o $@ $<
 
 clean:
 	rm -f main *.o
