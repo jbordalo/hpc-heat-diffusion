@@ -100,13 +100,9 @@ int main() {
 
     // Allocate two sets of data for current and next timesteps
     float *Tn = (float *) calloc(numElements, sizeof(float));
-    float *Tnp1 = (float *) calloc(numElements, sizeof(float));
 
     // Initializing the data for T0
     initTemp(Tn, nx, ny);
-
-    // Fill in the data on the next step to ensure that the boundaries are identical.
-    memcpy(Tnp1, Tn, numElements * sizeof(float));
 
     float *d_Tn;
     float *d_Tnp1;
@@ -117,6 +113,7 @@ int main() {
     dim3 numBlocks(nx / BLOCK_SIZE_X + 1, ny / BLOCK_SIZE_Y + 1);
     dim3 threadsPerBlock(BLOCK_SIZE_X, BLOCK_SIZE_Y);
 
+
     printf("Simulated time: %g (%d steps of %g)\n", numSteps * dt, numSteps, dt);
     printf("Simulated surface: %gx%g (in %dx%g divisions)\n", nx * h, ny * h, nx, h);
     writeTemp(Tn, nx, ny, 0);
@@ -124,31 +121,29 @@ int main() {
     // Timing
     clock_t start = clock();
 
+    cudaMemcpy(d_Tn, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Tnp1, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
+
     // Main loop
     for (int n = 0; n <= numSteps; n++) {
-        cudaMemcpy(d_Tn, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_Tnp1, Tnp1, numElements * sizeof(float), cudaMemcpyHostToDevice);
-
         compute<<<numBlocks, threadsPerBlock>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2);
-
-        cudaMemcpy(Tn, d_Tn, numElements * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(Tnp1, d_Tnp1, numElements * sizeof(float), cudaMemcpyDeviceToHost);
 
         // Write the output if needed
         if ((n + 1) % outputEvery == 0) {
+            cudaMemcpy(Tn, d_Tn, numElements * sizeof(float), cudaMemcpyDeviceToHost);
             cudaError_t errorCode = cudaGetLastError();
 
             if (errorCode != cudaSuccess) {
                 printf("Cuda error %d: %s\n", errorCode, cudaGetErrorString(errorCode));
                 exit(1);
             }
-            writeTemp(Tnp1, nx, ny, n + 1);
+            writeTemp(Tn, nx, ny, n + 1);
         }
 
         // Swapping the pointers for the next timestep
-        float *t = Tn;
-        Tn = Tnp1;
-        Tnp1 = t;
+        float *t = d_Tn;
+        d_Tn = d_Tnp1;
+        d_Tnp1 = t;
     }
 
     // Timing
@@ -157,7 +152,6 @@ int main() {
 
     // Release the memory
     free(Tn);
-    free(Tnp1);
 
     cudaFree(d_Tn);
     cudaFree(d_Tnp1);
