@@ -65,19 +65,48 @@ void writeTemp(float *T, int h, int w, int n) {
 }
 
 __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt, float h2) {
+    __shared__ float s_Tn[(BLOCK_SIZE_X + 2) * (BLOCK_SIZE_Y * 2)];
+
+    // Global indices
     int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
+
+    // Shared memory indices
+    int s_i = threadIdx.x + 1;
+    int s_j = threadIdx.y + 1;
+    int s_ny = BLOCK_SIZE_Y + 2;
+
+    // Load data into shared memory
+    s_Tn[getIndex(s_i, s_j, s_ny)] = Tn[getIndex(i, j, ny)];
+
+    // Top border
+    if (s_i == 1 && s_j != 1 && i != 0) {
+        s_Tn[getIndex(0, s_j, s_ny)] = Tn[getIndex(blockIdx.x * blockDim.x - 1, j, ny)];
+    }
+    // Bottom border
+    if (s_i == BLOCK_SIZE_X && s_j != BLOCK_SIZE_Y && i != nx - 1) {
+        s_Tn[getIndex(BLOCK_SIZE_X + 1, s_j, s_ny)] = Tn[getIndex((blockIdx.x + 1) * blockDim.x, j, ny)];
+    }
+    // Left border
+    if (s_i != 1 && s_j == 1 && j != 0) {
+        s_Tn[getIndex(s_i, 0, s_ny)] = Tn[getIndex(i, blockIdx.y * blockDim.y - 1, ny)];
+    }
+    // Right border
+    if (s_i != BLOCK_SIZE_X && s_j == BLOCK_SIZE_Y && j != ny - 1) {
+        s_Tn[getIndex(s_i, BLOCK_SIZE_Y + 1, s_ny)] = Tn[getIndex(i, (blockIdx.y + 1) * blockDim.y, ny)];
+    }
+
+    __syncthreads();
 
     if (i > 0 && i < nx - 1) {
-        int j = threadIdx.y + blockIdx.y * blockDim.y;
         if (j > 0 && j < ny - 1) {
-            const int index = getIndex(i, j, ny);
-            float tij = Tn[index];
-            float tim1j = Tn[getIndex(i - 1, j, ny)];
-            float tijm1 = Tn[getIndex(i, j - 1, ny)];
-            float tip1j = Tn[getIndex(i + 1, j, ny)];
-            float tijp1 = Tn[getIndex(i, j + 1, ny)];
+            float tij = s_Tn[getIndex(s_i, s_j, s_ny)];
+            float tim1j = s_Tn[getIndex(s_i - 1, s_j, s_ny)];
+            float tijm1 = s_Tn[getIndex(s_i, s_j - 1, s_ny)];
+            float tip1j = s_Tn[getIndex(s_i + 1, s_j, s_ny)];
+            float tijp1 = s_Tn[getIndex(s_i, s_j + 1, s_ny)];
 
-            Tnp1[index] = tij + aXdt * ((tim1j + tip1j + tijm1 + tijp1 - 4.0 * tij) / h2);
+            Tnp1[getIndex(i, j, ny)] = tij + aXdt * ((tim1j + tip1j + tijm1 + tijp1 - 4.0 * tij) / h2);
         }
     }
 }
