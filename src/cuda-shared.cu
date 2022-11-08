@@ -112,12 +112,12 @@ __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt
 }
 
 int main() {
-    const int nx = 100; // 200;   // Width of the area
-    const int ny = 100; // 200;   // Height of the area
+    const int nx = 200;   // Width of the area
+    const int ny = 200;   // Height of the area
 
     const float a = 0.5;     // Diffusion constant
 
-    const float h = 0.01; // 0.005;   // h=dx=dy  grid spacing
+    const float h = 0.005;   // h=dx=dy  grid spacing
 
     const float h2 = h * h;
 
