@@ -9,12 +9,15 @@ else
 
 endif
 
-all:    main cuda
+all:    main cuda cuda-shared
 
 main:	src/main.c $(OBJ)
 	cc -o main $(CFLAGS) $< $(OBJ) $(LDFLAGS)
 
-cuda: src/main.cu $(OBJ)
+cuda: src/cuda.cu $(OBJ)
+	nvcc -o $@ $<
+
+cuda-shared: src/cuda-shared.cu $(OBJ)
 	nvcc -o $@ $<
 
 clean:
