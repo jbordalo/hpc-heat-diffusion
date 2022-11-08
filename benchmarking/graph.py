@@ -12,3 +12,6 @@ for file in os.listdir(PATH):
 	df[file.split(".")[0]] = data
 
 print(df.head())
+
+with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
+	print(df.mean().sort_values())
