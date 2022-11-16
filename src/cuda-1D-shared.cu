@@ -13,7 +13,7 @@
 #include "pngwriter.h"
 #endif
 
-#define BLOCK_SIZE 1024
+#define BLOCK_SIZE 256
 
 /* Convert 2D index layout to unrolled 1D layout
  * \param[in] i      Row index
@@ -64,32 +64,37 @@ void writeTemp(float *T, int h, int w, int n) {
 }
 
 __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt, float h2) {
-    __shared__ float s_Tn[(BLOCK_SIZE*3+2)];
+    extern __shared__ float s_Tn[];
+
     //Global index
     const int index = threadIdx.x + blockIdx.x * blockDim.x;
     const int indexMod = index % ny;
+
     //SM index
-    int s = threadIdx.x + blockDim.x + 1;
+    int s = threadIdx.x + ny;
 
     //load data into SM
     s_Tn[s] = Tn[index];
-    //TOP    if(index-ny > blockIdx.x * blockDim.x)
-    s_Tn[threadIdx.x] = Tn[index-ny];
+    //TOP
+    if (s < 2 * ny)
+        s_Tn[s - ny] = Tn[index - ny];
     //BOTTOM
-    s_Tn[BLOCK_SIZE*2+2+threadIdx.x] = Tn[index+ny];
+    if (s > BLOCK_SIZE && s < BLOCK_SIZE + ny )
+        s_Tn[s + ny] = Tn[index + ny];
     //LEFT
-    if(s == BLOCK_SIZE + 1 && indexMod != 0)
-        s_Tn[BLOCK_SIZE] = Tn[index-1];
+    if (s == ny)
+        s_Tn[s - 1] = Tn[index - 1];
     //RIGHT
-    if(s == 2*BLOCK_SIZE && indexMod != ny - 1)
-        s_Tn[2*BLOCK_SIZE+1] = Tn[index+1];
+    if (s == BLOCK_SIZE+ny-1)
+        s_Tn[s + 1] = Tn[index + 1];
+
     __syncthreads();
 
     if (index > nx && indexMod < ny-1 && indexMod > 0 && index < nx*ny-ny) {
             float tij = s_Tn[s];
-            float tim1j = s_Tn[s - BLOCK_SIZE - 1];
+            float tim1j = s_Tn[s - ny];
             float tijm1 = s_Tn[s - 1];
-            float tip1j = s_Tn[s + BLOCK_SIZE + 1];
+            float tip1j = s_Tn[s + ny];
             float tijp1 = s_Tn[s + 1];
 
             Tnp1[index] = tij + aXdt * ((tim1j + tip1j + tijm1 + tijp1 - 4.0 * tij) / h2);
@@ -126,7 +131,7 @@ int main() {
 
     int nb = (numElements + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    printf("Simulated time: %g (%d steps of %g)\n", numSteps * dt, numSteps, dt);
+    printf("aSimulated time: %g (%d steps of %g)\n", numSteps * dt, numSteps, dt);
     printf("Simulated surface: %gx%g (in %dx%g divisions)\n", nx * h, ny * h, nx, h);
     writeTemp(Tn, nx, ny, 0);
 
@@ -136,9 +141,10 @@ int main() {
     cudaMemcpy(d_Tn, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_Tnp1, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
 
+    int smem = (BLOCK_SIZE+2*ny)*sizeof(int);
     // Main loop
     for (int n = 0; n <= numSteps; n++) {
-        compute<<<nb, BLOCK_SIZE>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2);
+        compute<<<nb, BLOCK_SIZE, smem>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2);
 
         // Write the output if needed
         if ((n + 1) % outputEvery == 0) {
