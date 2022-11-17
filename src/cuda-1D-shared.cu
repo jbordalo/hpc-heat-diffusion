@@ -131,7 +131,7 @@ int main() {
 
     int nb = (numElements + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    printf("aSimulated time: %g (%d steps of %g)\n", numSteps * dt, numSteps, dt);
+    printf("Simulated time: %g (%d steps of %g)\n", numSteps * dt, numSteps, dt);
     printf("Simulated surface: %gx%g (in %dx%g divisions)\n", nx * h, ny * h, nx, h);
     writeTemp(Tn, nx, ny, 0);
 
