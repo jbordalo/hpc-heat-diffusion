@@ -13,8 +13,6 @@
 #include "pngwriter.h"
 #endif
 
-#define BLOCK_SIZE_X 16
-#define BLOCK_SIZE_Y 16
 
 /* Convert 2D index layout to unrolled 1D layout
  * \param[in] i      Row index
@@ -82,79 +80,90 @@ __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt
     }
 }
 
-int main() {
-    const int nx = 200;   // Width of the area
-    const int ny = 200;   // Height of the area
+double timedif(struct timespec *t, struct timespec *t0) {
+    return (t->tv_sec-t0->tv_sec)+1.0e-9*(double)(t->tv_nsec-t0->tv_nsec);
+}
 
-    const float a = 0.5;     // Diffusion constant
+int main(int argc, char* argv[]) {
+        int threads = atoi(argv[1]);
+        int BLOCK_SIZE_X = threads;
+        int BLOCK_SIZE_Y = threads;
 
-    const float h = 0.005;   // h=dx=dy  grid spacing
+        const int nx = 200;   // Width of the area
+        const int ny = 200;   // Height of the area
 
-    const float h2 = h * h;
+        const float a = 0.5;     // Diffusion constant
 
-    const float dt = h2 / (4.0 * a); // Largest stable time step
-    const int numSteps = 100000;      // Number of time steps to simulate (time=numSteps*dt)
-    const int outputEvery = 100000;   // How frequently to write output image
+        const float h = 0.005;   // h=dx=dy  grid spacing
 
-    int numElements = nx * ny;
+        const float h2 = h * h;
 
-    // Allocate two sets of data for current and next timesteps
-    float *Tn = (float *) calloc(numElements, sizeof(float));
+        const float dt = h2 / (4.0 * a); // Largest stable time step
+        const int numSteps = 100000;      // Number of time steps to simulate (time=numSteps*dt)
+        const int outputEvery = 100000;   // How frequently to write output image
 
-    // Initializing the data for T0
-    initTemp(Tn, nx, ny);
+        int numElements = nx * ny;
 
-    float *d_Tn;
-    float *d_Tnp1;
+        // Allocate two sets of data for current and next timesteps
+        float *Tn = (float *) calloc(numElements, sizeof(float));
 
-    cudaMalloc(&d_Tn, numElements * sizeof(float));
-    cudaMalloc(&d_Tnp1, numElements * sizeof(float));
+        // Initializing the data for T0
+        initTemp(Tn, nx, ny);
 
-    dim3 numBlocks(nx / BLOCK_SIZE_X + 1, ny / BLOCK_SIZE_Y + 1);
-    dim3 threadsPerBlock(BLOCK_SIZE_X, BLOCK_SIZE_Y);
+        float *d_Tn;
+        float *d_Tnp1;
+
+        cudaMalloc(&d_Tn, numElements * sizeof(float));
+        cudaMalloc(&d_Tnp1, numElements * sizeof(float));
+
+        dim3 numBlocks(nx / BLOCK_SIZE_X + 1, ny / BLOCK_SIZE_Y + 1);
+        dim3 threadsPerBlock(BLOCK_SIZE_X, BLOCK_SIZE_Y);
 
 
-    printf("Simulated time: %g (%d steps of %g)\n", numSteps * dt, numSteps, dt);
-    printf("Simulated surface: %gx%g (in %dx%g divisions)\n", nx * h, ny * h, nx, h);
-    writeTemp(Tn, nx, ny, 0);
+        printf("Simulated time: %g (%d steps of %g)\n", numSteps * dt, numSteps, dt);
+        printf("Simulated surface: %gx%g (in %dx%g divisions)\n", nx * h, ny * h, nx, h);
+        writeTemp(Tn, nx, ny, 0);
 
-    // Timing
-    clock_t start = clock();
+        // Timing
+        struct timespec t0, t;
+        /*start*/
+        clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    cudaMemcpy(d_Tn, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_Tnp1, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_Tn, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_Tnp1, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
 
-    // Main loop
-    for (int n = 0; n <= numSteps; n++) {
-        compute<<<numBlocks, threadsPerBlock>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2);
+        // Main loop
+        for (int n = 0; n <= numSteps; n++) {
+            compute<<<numBlocks, threadsPerBlock>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2);
 
-        // Write the output if needed
-        if ((n + 1) % outputEvery == 0) {
-            cudaMemcpy(Tn, d_Tn, numElements * sizeof(float), cudaMemcpyDeviceToHost);
-            cudaError_t errorCode = cudaGetLastError();
+            // Write the output if needed
+            if ((n + 1) % outputEvery == 0) {
+                cudaMemcpy(Tn, d_Tn, numElements * sizeof(float), cudaMemcpyDeviceToHost);
+                cudaError_t errorCode = cudaGetLastError();
 
-            if (errorCode != cudaSuccess) {
-                printf("Cuda error %d: %s\n", errorCode, cudaGetErrorString(errorCode));
-                exit(1);
+                if (errorCode != cudaSuccess) {
+                    printf("Cuda error %d: %s\n", errorCode, cudaGetErrorString(errorCode));
+                    exit(1);
+                }
+                writeTemp(Tn, nx, ny, n + 1);
             }
-            writeTemp(Tn, nx, ny, n + 1);
+
+            // Swapping the pointers for the next timestep
+            float *t = d_Tn;
+            d_Tn = d_Tnp1;
+            d_Tnp1 = t;
         }
 
-        // Swapping the pointers for the next timestep
-        float *t = d_Tn;
-        d_Tn = d_Tnp1;
-        d_Tnp1 = t;
-    }
+        // Timing
+        /*end*/
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        printf("It took %f seconds\n", timedif(&t, &t0) );
 
-    // Timing
-    clock_t finish = clock();
-    printf("It took %f seconds\n", (double) (finish - start) / CLOCKS_PER_SEC);
+        // Release the memory
+        free(Tn);
 
-    // Release the memory
-    free(Tn);
+        cudaFree(d_Tn);
+        cudaFree(d_Tnp1);
 
-    cudaFree(d_Tn);
-    cudaFree(d_Tnp1);
-
-    return 0;
+        return 0;
 }

@@ -7,19 +7,6 @@
 #include "pngwriter.h"
 #endif
 
-#define BLOCK_SIZE 256
-#define STREAM_SIZE 20000 //TODO maybe change this param we'll see
-
-/* Convert 2D index layout to unrolled 1D layout
- * \param[in] i      Row index
- * \param[in] j      Column index
- * \param[in] width  The width of the area
- * \returns An index in the unrolled 1D array.
- */
-__device__ int getIndex(const int i, const int j, const int width) {
-    return i * width + j;
-}
-
 void initTemp(float *T, int h, int w) {
     // Initializing the data with heat from top side
     // all other points at zero
@@ -60,26 +47,27 @@ void writeTemp(float *T, int h, int w, int n) {
 
 __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt, float h2, int offset) {
     extern __shared__ float s_Tn[];
+    int BLOCK_SIZE = blockDim.x;
 
-    //Global index
-    const int index = threadIdx.x + offset + blockIdx.x * blockDim.x;
+    // Global index
+    const int index = threadIdx.x + blockIdx.x * blockDim.x + offset;
     const int indexMod = index % ny;
 
-    //SM index
+    // Shared memory index
     int s = threadIdx.x + ny;
 
-    //load data into SM
+    // load data into SM
     s_Tn[s] = Tn[index];
-    //TOP
+    // Top
     if (s < 2 * ny)
         s_Tn[s - ny] = Tn[index - ny];
-    //BOTTOM
+    // Bottom
     if (s > BLOCK_SIZE && s < BLOCK_SIZE + ny)
         s_Tn[s + ny] = Tn[index + ny];
-    //LEFT
+    // Left
     if (s == ny)
         s_Tn[s - 1] = Tn[index - 1];
-    //RIGHT
+    // Right
     if (s == BLOCK_SIZE + ny - 1)
         s_Tn[s + 1] = Tn[index + 1];
 
@@ -96,7 +84,14 @@ __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt
     }
 }
 
-int main() {
+double timedif(struct timespec *t, struct timespec *t0) {
+    return (t->tv_sec-t0->tv_sec)+1.0e-9*(double)(t->tv_nsec-t0->tv_nsec);
+}
+
+int main(int argc, char* argv[]) {
+    int BLOCK_SIZE = atoi(argv[1]);
+    int STREAM_SIZE = atoi(argv[2]);
+
     const int nx = 200;   // Width of the area
     const int ny = 200;   // Height of the area
 
@@ -131,15 +126,18 @@ int main() {
     writeTemp(Tn, nx, ny, 0);
 
     // Timing
-    clock_t start = clock();
+    struct timespec t0, t;
+    /*start*/
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
     int nStreams = numElements / STREAM_SIZE;
-    int smem = (BLOCK_SIZE + 2 * ny) * sizeof(int);
+    int smem = (BLOCK_SIZE + 2 * ny) * sizeof(float);
+
+    nb = (nb + nStreams - 1) / nStreams;
 
     cudaStream_t stream[nStreams];
     for (int i = 0; i < nStreams; ++i)
         cudaStreamCreate(&stream[i]);
-
-    // VERSION 2
 
     int offset;
 
@@ -150,39 +148,47 @@ int main() {
         if (offset + STREAM_SIZE + ny < numElements) size += ny;
         cudaMemcpyAsync(&d_Tn[offset], &Tn[offset],
                         sizeof(float) * size, cudaMemcpyHostToDevice, stream[i]);
-        cudaMemcpyAsync(&d_Tnp1[offset],  &Tn[offset], sizeof(float) * size, cudaMemcpyHostToDevice, stream[i]);
+        cudaMemcpyAsync(&d_Tnp1[offset],  &Tn[offset],
+                        sizeof(float) * size, cudaMemcpyHostToDevice, stream[i]);
 
     }
 
     for (int n = 0; n <= numSteps; n++) {
         for (int i = 0; i < nStreams; ++i) {
             offset = i * STREAM_SIZE;
-            compute<<<STREAM_SIZE / nb, BLOCK_SIZE, smem, stream[i]>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2, offset);
+            compute<<<nb, BLOCK_SIZE, smem, stream[i]>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2, offset);
         }
 
-        for (int i = 0; i < nStreams; ++i) {
-            offset = i * STREAM_SIZE;
-            cudaMemcpyAsync(&Tn[offset], &d_Tn[offset], sizeof(float) * STREAM_SIZE, cudaMemcpyDeviceToHost,
-                            stream[i]);
-            cudaError_t errorCode = cudaGetLastError();
-            if (errorCode != cudaSuccess) {
-                printf("Cuda error %d: %s\n", errorCode, cudaGetErrorString(errorCode));
-                exit(1);
+        if ((n + 1) % outputEvery == 0) {
+            for (int i = 0; i < nStreams; ++i) {
+                offset = i * STREAM_SIZE;
+                cudaMemcpyAsync(&Tn[offset], &d_Tn[offset],
+                                sizeof(float) * STREAM_SIZE, cudaMemcpyDeviceToHost, stream[i]);
+                cudaError_t errorCode = cudaGetLastError();
+                if (errorCode != cudaSuccess) {
+                    printf("Cuda error %d: %s\n", errorCode, cudaGetErrorString(errorCode));
+                    exit(1);
+                }
             }
+            cudaDeviceSynchronize();
+            writeTemp(Tn, nx, ny, n + 1);
         }
 
-        if ((n + 1) % outputEvery == 0) writeTemp(Tn, nx, ny, n + 1);
         // Swapping the pointers for the next timestep
-        float *t = d_Tn;
+        float *temp = d_Tn;
         d_Tn = d_Tnp1;
-        d_Tnp1 = t;
+        d_Tnp1 = temp;
     }
 
     // Timing
-    clock_t finish = clock();
-    printf("It took %f seconds\n", (double) (finish - start) / CLOCKS_PER_SEC);
+    /*end*/
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    printf("It took %f seconds\n", timedif(&t, &t0) );
     // Release the memory
     free(Tn);
+
+    for (int i = 0; i < nStreams; ++i)
+        cudaStreamDestroy(stream[i]);
 
     cudaFree(d_Tn);
     cudaFree(d_Tnp1);

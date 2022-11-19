@@ -1,9 +1,3 @@
-/*
- * Based on materials from:
- * https://github.com/csc-training/openacc/tree/master/exercises/heat
- * https://enccs.github.io/OpenACC-CUDA-beginners/2.02_cuda-heat-equation/
- * changed 23 nov 2022 - vad@fct.unl.pt
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,20 +6,6 @@
 #ifdef PNG
 #include "pngwriter.h"
 #endif
-#define WORK_PER_THREAD 2
-#define BLOCK_SIZE (128 / WORK_PER_THREAD)
-
-
-
-/* Convert 2D index layout to unrolled 1D layout
- * \param[in] i      Row index
- * \param[in] j      Column index
- * \param[in] width  The width of the area
- * \returns An index in the unrolled 1D array.
- */
-__device__ int getIndex(const int i, const int j, const int width) {
-    return i * width + j;
-}
 
 void initTemp(float *T, int h, int w) {
     // Initializing the data with heat from top side
@@ -65,7 +45,7 @@ void writeTemp(float *T, int h, int w, int n) {
 #endif
 }
 
-__global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt, float h2) {
+__global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt, float h2, int WORK_PER_THREAD) {
     int index = threadIdx.x * WORK_PER_THREAD + blockIdx.x * blockDim.x;
     for (int i = 0; i < WORK_PER_THREAD; i++) {
         const int indexMod = index % ny;
@@ -82,7 +62,14 @@ __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt
     }
 }
 
-int main() {
+double timedif(struct timespec *t, struct timespec *t0) {
+    return (t->tv_sec-t0->tv_sec)+1.0e-9*(double)(t->tv_nsec-t0->tv_nsec);
+}
+
+int main(int argc, char* argv[]) {
+    int WORK_PER_THREAD = atoi(argv[2]);
+    int BLOCK_SIZE = atoi(argv[1])/WORK_PER_THREAD;
+
     const int nx = 200;   // Width of the area
     const int ny = 200;   // Height of the area
 
@@ -117,14 +104,16 @@ int main() {
     writeTemp(Tn, nx, ny, 0);
 
     // Timing
-    clock_t start = clock();
+    struct timespec t0, t;
+    /*start*/
+    clock_gettime(CLOCK_MONOTONIC, &t0);
 
     cudaMemcpy(d_Tn, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_Tnp1, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
 
     // Main loop
     for (int n = 0; n <= numSteps; n++) {
-        compute<<<nb, BLOCK_SIZE>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2);
+        compute<<<nb, BLOCK_SIZE>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2, WORK_PER_THREAD);
 
         // Write the output if needed
         if ((n + 1) % outputEvery == 0) {
@@ -145,8 +134,9 @@ int main() {
     }
 
     // Timing
-    clock_t finish = clock();
-    printf("It took %f seconds\n", (double) (finish - start) / CLOCKS_PER_SEC);
+    /*end*/
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    printf("It took %f seconds\n", timedif(&t, &t0) );
 
     // Release the memory
     free(Tn);

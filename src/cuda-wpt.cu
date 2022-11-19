@@ -13,10 +13,6 @@
 #include "pngwriter.h"
 #endif
 
-#define BLOCK_SIZE_X (32 / WORK_PER_THREAD)
-#define BLOCK_SIZE_Y (32 / WORK_PER_THREAD)
-#define WORK_PER_THREAD 2 //REMINDER THIS WILL BE RAISED TO THE POWER OF 2 IN ACTUAL WORK
-
 /* Convert 2D index layout to unrolled 1D layout
  * \param[in] i      Row index
  * \param[in] j      Column index
@@ -65,7 +61,7 @@ void writeTemp(float *T, int h, int w, int n) {
 #endif
 }
 
-__global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt, float h2) {
+__global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt, float h2, int WORK_PER_THREAD) {
     int i = threadIdx.x * WORK_PER_THREAD + blockIdx.x * blockDim.x;
     int j = threadIdx.y * WORK_PER_THREAD + blockIdx.y * blockDim.y;
     int save_j = j;
@@ -91,7 +87,16 @@ __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt
     }
 }
 
-int main() {
+double timedif(struct timespec *t, struct timespec *t0) {
+    return (t->tv_sec-t0->tv_sec)+1.0e-9*(double)(t->tv_nsec-t0->tv_nsec);
+}
+
+int main(int argc, char* argv[]) {
+    int threads = atoi(argv[1]);
+    int WORK_PER_THREAD = atoi(argv[2]);
+    int BLOCK_SIZE_X = threads / WORK_PER_THREAD;
+    int BLOCK_SIZE_Y = threads / WORK_PER_THREAD;
+
     const int nx = 200;   // Width of the area
     const int ny = 200;   // Height of the area
 
@@ -128,14 +133,16 @@ int main() {
     writeTemp(Tn, nx, ny, 0);
 
     // Timing
-    clock_t start = clock();
+    struct timespec t0, t;
+    /*start*/
+    clock_gettime(CLOCK_MONOTONIC, &t0);
 
     cudaMemcpy(d_Tn, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_Tnp1, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
 
     // Main loop
     for (int n = 0; n <= numSteps; n++) {
-        compute<<<numBlocks, threadsPerBlock>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2);
+        compute<<<numBlocks, threadsPerBlock>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2, WORK_PER_THREAD);
 
         // Write the output if needed
         if ((n + 1) % outputEvery == 0) {
@@ -156,8 +163,9 @@ int main() {
     }
 
     // Timing
-    clock_t finish = clock();
-    printf("It took %f seconds\n", (double) (finish - start) / CLOCKS_PER_SEC);
+    /*end*/
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    printf("It took %f seconds\n", timedif(&t, &t0) );
 
     // Release the memory
     free(Tn);

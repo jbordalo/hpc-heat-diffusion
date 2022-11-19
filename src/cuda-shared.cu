@@ -13,9 +13,6 @@
 #include "pngwriter.h"
 #endif
 
-#define BLOCK_SIZE_X 16
-#define BLOCK_SIZE_Y 16
-
 /* Convert 2D index layout to unrolled 1D layout
  * \param[in] i      Row index
  * \param[in] j      Column index
@@ -65,7 +62,9 @@ void writeTemp(float *T, int h, int w, int n) {
 }
 
 __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt, float h2) {
-    __shared__ float s_Tn[(BLOCK_SIZE_X + 2) * (BLOCK_SIZE_Y * 2)];
+    extern __shared__ float s_Tn[];
+    int BLOCK_SIZE_X = blockDim.x;
+    int BLOCK_SIZE_Y = blockDim.y;
 
     // Global indices
     int i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -80,20 +79,20 @@ __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt
     s_Tn[getIndex(s_i, s_j, s_ny)] = Tn[getIndex(i, j, ny)];
 
     // Top border
-    if (s_i == 1 && s_j != 1 && i != 0) {
-        s_Tn[getIndex(0, s_j, s_ny)] = Tn[getIndex(blockIdx.x * blockDim.x - 1, j, ny)];
+    if (s_i == 1 && i!=0) {
+        s_Tn[getIndex(s_i - 1, s_j, s_ny)] = Tn[getIndex(blockIdx.x * blockDim.x - 1, j, ny)];
     }
     // Bottom border
-    if (s_i == BLOCK_SIZE_X && s_j != BLOCK_SIZE_Y && i != nx - 1) {
-        s_Tn[getIndex(BLOCK_SIZE_X + 1, s_j, s_ny)] = Tn[getIndex((blockIdx.x + 1) * blockDim.x, j, ny)];
+    if (s_i == BLOCK_SIZE_X && i != nx - 1 ) {
+        s_Tn[getIndex(BLOCK_SIZE_X+1 , s_j, s_ny)] = Tn[getIndex((blockIdx.x + 1) * blockDim.x, j, ny)];
     }
     // Left border
-    if (s_i != 1 && s_j == 1 && j != 0) {
-        s_Tn[getIndex(s_i, 0, s_ny)] = Tn[getIndex(i, blockIdx.y * blockDim.y - 1, ny)];
+    if (s_j == 1 && j != 0) {
+        s_Tn[getIndex(s_i, s_j - 1, s_ny)] = Tn[getIndex(i, blockIdx.y * blockDim.y - 1, ny)];
     }
     // Right border
-    if (s_i != BLOCK_SIZE_X && s_j == BLOCK_SIZE_Y && j != ny - 1) {
-        s_Tn[getIndex(s_i, BLOCK_SIZE_Y + 1, s_ny)] = Tn[getIndex(i, (blockIdx.y + 1) * blockDim.y, ny)];
+    if (s_j == BLOCK_SIZE_Y && j != ny - 1) {
+        s_Tn[getIndex(s_i, BLOCK_SIZE_Y+1 , s_ny)] = Tn[getIndex(i, (blockIdx.y + 1) * blockDim.y, ny)];
     }
 
     __syncthreads();
@@ -111,7 +110,15 @@ __global__ void compute(const float *Tn, float *Tnp1, int nx, int ny, float aXdt
     }
 }
 
-int main() {
+double timedif(struct timespec *t, struct timespec *t0) {
+    return (t->tv_sec-t0->tv_sec)+1.0e-9*(double)(t->tv_nsec-t0->tv_nsec);
+}
+
+int main(int argc, char* argv[]) {
+    int threads = atoi(argv[1]);
+    int BLOCK_SIZE_X = threads;
+    int BLOCK_SIZE_Y = threads;
+
     const int nx = 200;   // Width of the area
     const int ny = 200;   // Height of the area
 
@@ -148,14 +155,17 @@ int main() {
     writeTemp(Tn, nx, ny, 0);
 
     // Timing
-    clock_t start = clock();
+    struct timespec t0, t;
+    /*start*/
+    clock_gettime(CLOCK_MONOTONIC, &t0);
 
     cudaMemcpy(d_Tn, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_Tnp1, Tn, numElements * sizeof(float), cudaMemcpyHostToDevice);
 
+    int smem = (BLOCK_SIZE_X + 2) * (BLOCK_SIZE_Y + 2) * sizeof(float);
     // Main loop
     for (int n = 0; n <= numSteps; n++) {
-        compute<<<numBlocks, threadsPerBlock>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2);
+        compute<<<numBlocks, threadsPerBlock, smem>>>(d_Tn, d_Tnp1, nx, ny, a * dt, h2);
 
         // Write the output if needed
         if ((n + 1) % outputEvery == 0) {
@@ -176,8 +186,9 @@ int main() {
     }
 
     // Timing
-    clock_t finish = clock();
-    printf("It took %f seconds\n", (double) (finish - start) / CLOCKS_PER_SEC);
+    /*end*/
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    printf("It took %f seconds\n", timedif(&t, &t0) );
 
     // Release the memory
     free(Tn);
