@@ -26,7 +26,7 @@ cuda-1D: src/cuda-1D.cu $(OBJ)
 cuda-1D-shared: src/cuda-1D-shared.cu $(OBJ)
 	nvcc -o $@ $<
 
-cuda-1D-shared-stream: src/cuda-1D-shared.cu $(OBJ)
+cuda-1D-shared-stream: src/cuda-1D-shared-stream.cu $(OBJ)
 	nvcc -o $@ $<
 
 clean:
